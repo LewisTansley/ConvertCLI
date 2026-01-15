@@ -429,6 +429,198 @@ detect_existing_partitions() {
     lsblk -f -n -o NAME,FSTYPE "$disk" | grep -i "^[^ ]* $fs_type" | awk '{print "/dev/" $1}'
 }
 
+        show_warning "Failed to unmount partition after defragmentation"
+        sleep 2
+        umount -l "$mount_point" 2>/dev/null || true
+    fi
+    rmdir "$mount_point" 2>/dev/null || true
+    
+    if [ "$defrag_success" = true ]; then
+        show_success "${fs_type} defragmentation completed"
+        return 0
+    else
+        show_warning "Could not perform defragmentation"
+        return 1
+    fi
+}
+
+# Check disk type and offer defragmentation if HDD
+check_and_offer_defrag() {
+    local disk="$1"
+    local ntfs_partition="$2"
+    
+    if [ -z "$ntfs_partition" ]; then
+        # Try to detect NTFS partition
+        ntfs_partition=$(detect_ntfs_partitions "$disk")
+        if [ -z "$ntfs_partition" ]; then
+            return 0  # No NTFS partition, skip defrag check
+        fi
+    fi
+    
+    # Detect disk type
+    local disk_type
+    disk_type=$(detect_disk_type "$disk")
+    
+    if [ "$disk_type" != "HDD" ]; then
+        # Not an HDD, skip defrag
+        return 0
+    fi
+    
+    # It's an HDD - confirm with user and offer defrag
+    local width
+    width=$(get_terminal_size | cut -d' ' -f1)
+    
+    clear_screen
+    print_header
+    
+    local disk_name
+    disk_name=$(basename "$disk")
+    local disk_model
+    disk_model=$(lsblk -d -n -o MODEL "$disk" 2>/dev/null | head -1 || echo "Unknown")
+    
+    local confirmation_msg=""
+    confirmation_msg+="${YELLOW}${WARN} Hard Drive Detected ${WARN}${RESET}\n"
+    confirmation_msg+="\n"
+    confirmation_msg+="Disk: ${BOLD}$disk${RESET}\n"
+    confirmation_msg+="Model: ${BOLD}$disk_model${RESET}\n"
+    confirmation_msg+="Type: ${BOLD}Hard Disk Drive (HDD)${RESET}\n"
+    confirmation_msg+="\n"
+    confirmation_msg+="The selected disk has been detected as a hard disk drive.\n"
+    confirmation_msg+="Defragmenting the NTFS partition before conversion can\n"
+    confirmation_msg+="improve performance and reduce conversion time.\n"
+    confirmation_msg+="\n"
+    confirmation_msg+="${YELLOW}Please confirm this is definitely a hard drive${RESET}\n"
+    confirmation_msg+="${YELLOW}and not a solid state drive for safety.${RESET}\n"
+    
+    draw_box "$width" "Hard Drive Detection" "$confirmation_msg"
+    print_footer
+    
+    local options=("Yes, this is a hard drive - offer defrag" "No, this is an SSD - skip defrag" "Cancel")
+    local selection
+    selection=$(show_menu "Confirm Disk Type" "${options[@]}")
+    
+    case "$selection" in
+        0)
+            # User confirmed it's an HDD - offer defrag
+            local defrag_options=("Yes, defragment now (recommended)" "No, skip defragmentation" "Cancel")
+            local defrag_selection
+            defrag_selection=$(show_menu "Defragment NTFS Partition?" "${defrag_options[@]}")
+            
+            case "$defrag_selection" in
+                0)
+                    # User wants to defrag
+                    if defrag_ntfs "$ntfs_partition"; then
+                        show_success "Defragmentation completed. Proceeding with conversion..."
+                        sleep 2
+                    else
+                        show_warning "Defragmentation had issues, but continuing with conversion..."
+                        sleep 2
+                    fi
+                    ;;
+                1)
+                    # User skipped defrag
+                    show_info "Skipping defragmentation. Proceeding with conversion..."
+                    sleep 1
+                    ;;
+                *)
+                    # User cancelled
+                    exit 0
+                    ;;
+            esac
+            ;;
+        1)
+            # User says it's an SSD - skip defrag
+            show_info "Skipping defragmentation (SSD detected). Proceeding with conversion..."
+            sleep 1
+            ;;
+        *)
+            # User cancelled
+            exit 0
+            ;;
+    esac
+    
+    return 0
+}
+
+# Check disk type and offer defragmentation for target filesystem after conversion
+check_and_offer_post_conversion_defrag() {
+    local disk="$1"
+    local target_partition="$2"
+    local fs_type="$3"
+    
+    if [ -z "$target_partition" ]; then
+        return 0  # No target partition, skip
+    fi
+    
+    # Detect disk type
+    local disk_type
+    disk_type=$(detect_disk_type "$disk")
+    
+    if [ "$disk_type" != "HDD" ]; then
+        # Not an HDD, skip defrag
+        return 0
+    fi
+    
+    # Skip defrag for filesystems that don't need it
+    case "$fs_type" in
+        f2fs)
+            return 0  # f2fs is SSD-optimized, doesn't need defrag
+            ;;
+    esac
+    
+    # It's an HDD - offer defrag for the target filesystem
+    local width
+    width=$(get_terminal_size | cut -d' ' -f1)
+    
+    clear_screen
+    print_header
+    
+    local disk_name
+    disk_name=$(basename "$disk")
+    local disk_model
+    disk_model=$(lsblk -d -n -o MODEL "$disk" 2>/dev/null | head -1 || echo "Unknown")
+    
+    local confirmation_msg=""
+    confirmation_msg+="${YELLOW}${WARN} Conversion Complete ${WARN}${RESET}\n"
+    confirmation_msg+="\n"
+    confirmation_msg+="Disk: ${BOLD}$disk${RESET}\n"
+    confirmation_msg+="Model: ${BOLD}$disk_model${RESET}\n"
+    confirmation_msg+="Type: ${BOLD}Hard Disk Drive (HDD)${RESET}\n"
+    confirmation_msg+="Target: ${BOLD}${fs_type} on ${target_partition}${RESET}\n"
+    confirmation_msg+="\n"
+    confirmation_msg+="The conversion is complete. Defragmenting the new\n"
+    confirmation_msg+="${fs_type} partition can improve performance.\n"
+    confirmation_msg+="\n"
+    confirmation_msg+="${YELLOW}Would you like to defragment the ${fs_type} partition?${RESET}\n"
+    
+    draw_box "$width" "Post-Conversion Defragmentation" "$confirmation_msg"
+    print_footer
+    
+    local options=("Yes, defragment now (recommended)" "No, skip defragmentation")
+    local selection
+    selection=$(show_menu "Defragment ${fs_type} Partition?" "${options[@]}")
+    
+    case "$selection" in
+        0)
+            # User wants to defrag
+            if defrag_linux_fs "$target_partition" "$fs_type"; then
+                show_success "Defragmentation completed successfully!"
+                sleep 2
+            else
+                show_warning "Defragmentation had issues, but conversion is complete"
+                sleep 2
+            fi
+            ;;
+        *)
+            # User skipped defrag
+            show_info "Skipping defragmentation."
+            sleep 1
+            ;;
+    esac
+    
+    return 0
+}
+
 select_filesystem() {
     local fs_options=("ext4" "btrfs" "xfs" "f2fs" "reiserfs" "jfs")
     local fs_display=()
@@ -1469,6 +1661,9 @@ main_conversion_loop() {
     show_info "NTFS partition has been converted to ${TARGET_FILESYSTEM}"
     show_info "Total iterations: $((iteration + 1))"
     show_info "Files migrated: $FILES_MIGRATED"
+    
+    # Offer defragmentation for the target filesystem if HDD
+    check_and_offer_post_conversion_defrag "$SELECTED_DISK" "$TARGET_PARTITION" "$TARGET_FILESYSTEM"
 }
 
 ###############################################################################
@@ -1515,6 +1710,11 @@ main() {
         
         # Select disk
         select_disk
+        
+        # Check if HDD and offer defragmentation
+        local ntfs_part
+        ntfs_part=$(detect_ntfs_partitions "$SELECTED_DISK")
+        check_and_offer_defrag "$SELECTED_DISK" "$ntfs_part"
         
         # Select filesystem
         select_filesystem
