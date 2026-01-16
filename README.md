@@ -5,6 +5,8 @@ A powerful, interactive TUI-based bash tool for safely converting NTFS partition
 ![License](https://img.shields.io/badge/license-GPL%20v3-blue.svg)
 ![Platform](https://img.shields.io/badge/platform-Linux-lightgrey.svg)
 ![Shell](https://img.shields.io/badge/shell-bash-green.svg)
+![Shell](https://img.shields.io/badge/shell-fish-green.svg)
+![Shell](https://img.shields.io/badge/shell-zsh-green.svg)
 ![Version](https://img.shields.io/badge/version-1.0.0-orange.svg)
 
 ## Overview
