@@ -1,6 +1,12 @@
-# ConvertCLI - NTFS to Linux Filesystem Converter
+# Penguinize
 
-A powerful, interactive TUI-based bash tool for safely converting NTFS partitions to native Linux filesystems while preserving all your data.
+```
+───(o>
+ ──//\
+  ─V_/_
+```
+
+A powerful, interactive TUI-based bash tool for safely converting NTFS partitions to native Linux filesystems while preserving all your data. Escape Windows and join the penguin side!
 
 ![License](https://img.shields.io/badge/license-GPL%20v3-blue.svg)
 ![Platform](https://img.shields.io/badge/platform-Linux-lightgrey.svg)
@@ -11,9 +17,9 @@ A powerful, interactive TUI-based bash tool for safely converting NTFS partition
 
 ## Overview
 
-ConvertCLI provides a safe, iterative approach to converting NTFS partitions to Linux-native filesystems without data loss. Unlike traditional methods that require backing up data to external storage, this tool performs an in-place conversion by iteratively shrinking the NTFS partition and migrating files to the new filesystem.
+Penguinize provides a safe, iterative approach to converting NTFS partitions to Linux-native filesystems without data loss. Unlike traditional methods that require backing up data to external storage, this tool performs an in-place conversion by iteratively shrinking the NTFS partition and migrating files to the new filesystem.
 
-### Why Use ConvertCLI?
+### Why Use Penguinize?
 
 - **No External Storage Required** - Convert in-place without needing backup drives
 - **Data Preservation** - Iterative process ensures your files are safely migrated
@@ -108,23 +114,23 @@ The following packages are required and will be automatically installed if missi
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/ConvertCLI.git
-cd ConvertCLI
+git clone https://github.com/yourusername/Penguinize.git
+cd Penguinize
 
 # Make executable
-chmod +x convert_ntfs_to_linux_fs.sh
+chmod +x penguinize
 
 # Run with sudo
-sudo ./convert_ntfs_to_linux_fs.sh
+sudo ./penguinize
 ```
 
 ### Manual Download
 
 ```bash
 # Download the script directly
-curl -O https://raw.githubusercontent.com/yourusername/ConvertCLI/main/convert_ntfs_to_linux_fs.sh
-chmod +x convert_ntfs_to_linux_fs.sh
-sudo ./convert_ntfs_to_linux_fs.sh
+curl -O https://raw.githubusercontent.com/yourusername/Penguinize/main/penguinize
+chmod +x penguinize
+sudo ./penguinize
 ```
 
 ---
@@ -134,7 +140,7 @@ sudo ./convert_ntfs_to_linux_fs.sh
 ### Basic Usage
 
 ```bash
-sudo ./convert_ntfs_to_linux_fs.sh
+sudo ./penguinize
 ```
 
 The interactive TUI will guide you through:
@@ -155,13 +161,13 @@ The interactive TUI will guide you through:
 
 ```bash
 # Standard interactive conversion
-sudo ./convert_ntfs_to_linux_fs.sh
+sudo ./penguinize
 
 # Test what would happen without making changes
-sudo ./convert_ntfs_to_linux_fs.sh --dry-run
+sudo ./penguinize --dry-run
 
 # Display help
-./convert_ntfs_to_linux_fs.sh --help
+./penguinize --help
 ```
 
 ### Keyboard Navigation
@@ -231,10 +237,10 @@ sudo ./convert_ntfs_to_linux_fs.sh --dry-run
 
 ### Automatic State Saving
 
-ConvertCLI automatically saves progress after each major operation to:
+Penguinize automatically saves progress after each major operation to:
 
 ```
-~/.ntfs_to_linux_fs/state_<device>.conf
+~/.penguinize/state_<device>.conf
 ```
 
 ### State Information Tracked
@@ -250,7 +256,7 @@ ConvertCLI automatically saves progress after each major operation to:
 Simply run the script again - it will automatically detect the saved state and offer to resume:
 
 ```bash
-sudo ./convert_ntfs_to_linux_fs.sh
+sudo ./penguinize
 # Script detects existing state and prompts:
 # "Previous conversion state found. Resume? [Yes/No]"
 ```
@@ -308,7 +314,7 @@ sudo ./convert_ntfs_to_linux_fs.sh
 lsblk
 
 # Ensure you're running as root
-sudo ./convert_ntfs_to_linux_fs.sh
+sudo ./penguinize
 ```
 
 #### Package installation fails
@@ -347,7 +353,7 @@ sudo apk add ntfs-3g-progs parted rsync util-linux
 
 #### Conversion interrupted
 
-1. Check state file: `~/.ntfs_to_linux_fs/`
+1. Check state file: `~/.penguinize/`
 2. Run script again to resume
 3. Verify disk space availability
 4. Check filesystem integrity:
@@ -426,10 +432,10 @@ Contributions are welcome! Please ensure:
 
 ```bash
 # Test with dummy mode (no actual disk operations)
-sudo ./convert_ntfs_to_linux_fs.sh --dummy-mode
+sudo ./penguinize --dummy-mode
 
 # Test with dry run (shows what would happen)
-sudo ./convert_ntfs_to_linux_fs.sh --dry-run
+sudo ./penguinize --dry-run
 ```
 
 ---

@@ -104,9 +104,9 @@ if [ -n "${BASH_VERSION:-}" ]; then
 fi
 
 # Script configuration
-SCRIPT_NAME="convert_ntfs_to_linux_fs.sh"
+SCRIPT_NAME="penguinize"
 SCRIPT_VERSION="1.1.0"
-STATE_DIR="${HOME}/.ntfs_to_linux_fs"
+STATE_DIR="${HOME}/.penguinize"
 STATE_FILE=""
 
 # Compatibility function for reading input
@@ -181,6 +181,41 @@ DUMMY_NTFS_USED_KB=30000000  # 30GB used
 DUMMY_DISK_SIZE_KB=100000000  # 100GB
 DUMMY_ITERATION=0
 
+# Lock file to prevent concurrent execution
+LOCK_FILE="/var/lock/penguinize.lock"
+LOCK_FD=""
+
+# Acquire exclusive lock to prevent concurrent runs
+acquire_lock() {
+    # Skip lock in dummy mode (for testing)
+    if [ "$DUMMY_MODE" = true ]; then
+        return 0
+    fi
+    
+    # Create lock directory if it doesn't exist
+    mkdir -p "$(dirname "$LOCK_FILE")" 2>/dev/null || true
+    
+    # Open lock file on a file descriptor
+    exec {LOCK_FD}>"$LOCK_FILE"
+    
+    if ! flock -n "$LOCK_FD"; then
+        echo "ERROR: Another instance of Penguinize is already running." >&2
+        echo "If you're sure no other instance is running, remove: $LOCK_FILE" >&2
+        exit 1
+    fi
+    
+    # Write our PID to the lock file for debugging
+    echo $$ > "$LOCK_FILE"
+}
+
+# Release the lock
+release_lock() {
+    if [ -n "$LOCK_FD" ]; then
+        exec {LOCK_FD}>&- 2>/dev/null || true
+        rm -f "$LOCK_FILE" 2>/dev/null || true
+    fi
+}
+
 # Screen layout configuration
 SCREEN_COLS=80
 SCREEN_ROWS=24
@@ -199,7 +234,7 @@ MAX_LOG_LINES=10
 
 # Split content area mode - when true, progress panel uses top, logs use bottom
 PROGRESS_PANEL_ACTIVE=false
-PROGRESS_PANEL_HEIGHT=11  # Rows 0-10 for progress panel (title + 10 lines)
+PROGRESS_PANEL_HEIGHT=15  # Rows 0-14 for progress panel (penguin animation + title + info)
 
 # Filesystem definitions
 declare -A FS_PACKAGES
@@ -604,7 +639,7 @@ init_screen_layout() {
 
 # Draw the static header (minimal style)
 draw_header() {
-    local title="NTFS to Linux Converter"
+    local title="Penguinize"
     local version="v${SCRIPT_VERSION}"
     
     # Position at top
@@ -686,7 +721,7 @@ update_status_bar() {
     local progress="${2:-}"
     
     if [ "$SCREEN_INITIALIZED" != true ]; then
-        init_screen_layout
+        init_screen
     fi
     
     # Keep cursor hidden during UI updates
@@ -698,7 +733,7 @@ update_status_bar() {
 # Clear only the content area (not header/footer/status)
 clear_content_area() {
     if [ "$SCREEN_INITIALIZED" != true ]; then
-        init_screen_layout
+        init_screen
     fi
     
     local row
@@ -717,7 +752,7 @@ clear_content_area() {
 # Clear only the progress panel area (top portion of content area)
 clear_progress_area() {
     if [ "$SCREEN_INITIALIZED" != true ]; then
-        init_screen_layout
+        init_screen
     fi
     
     local row
@@ -735,7 +770,7 @@ clear_progress_area() {
 # Clear only the log area (bottom portion of content area, below progress panel)
 clear_log_area() {
     if [ "$SCREEN_INITIALIZED" != true ]; then
-        init_screen_layout
+        init_screen
     fi
     
     local start_row=$((CONTENT_START_ROW + PROGRESS_PANEL_HEIGHT))
@@ -749,7 +784,7 @@ clear_log_area() {
 # Get the number of available log rows (when progress panel is active)
 get_log_rows() {
     if [ "$SCREEN_INITIALIZED" != true ]; then
-        init_screen_layout
+        init_screen
     fi
     local total_rows=$((CONTENT_END_ROW - CONTENT_START_ROW + 1))
     if [ "$PROGRESS_PANEL_ACTIVE" = true ]; then
@@ -787,10 +822,47 @@ cleanup_screen() {
     printf "\n" >/dev/tty
 }
 
+# Comprehensive cleanup on signal/exit - unmounts partitions, removes temp files
+cleanup_on_signal() {
+    # Unmount any mounted partitions
+    if [ -n "$NTFS_MOUNT" ] && mountpoint -q "$NTFS_MOUNT" 2>/dev/null; then
+        umount "$NTFS_MOUNT" 2>/dev/null || umount -l "$NTFS_MOUNT" 2>/dev/null || true
+    fi
+    if [ -n "$TARGET_MOUNT" ] && mountpoint -q "$TARGET_MOUNT" 2>/dev/null; then
+        umount "$TARGET_MOUNT" 2>/dev/null || umount -l "$TARGET_MOUNT" 2>/dev/null || true
+    fi
+    
+    # Remove mount point directories
+    [ -d "$NTFS_MOUNT" ] && rmdir "$NTFS_MOUNT" 2>/dev/null || true
+    [ -d "$TARGET_MOUNT" ] && rmdir "$TARGET_MOUNT" 2>/dev/null || true
+    
+    # Clean up temp files (using $$ which is the script's PID)
+    rm -f "/tmp/rsync_log_$$.txt" 2>/dev/null || true
+    rm -f "/tmp/rsync_status_$$.txt" 2>/dev/null || true
+    rm -f "/tmp/verified_files_$$.txt" 2>/dev/null || true
+    
+    # Clean up any other temp mount points we may have created
+    for mount_dir in /mnt/ntfs_$$ /mnt/target_$$ /mnt/defrag_$$ /mnt/temp_resize_$$ /mnt/temp_expand_$$ /mnt/temp_iter_expand_$$ /mnt/target_check_$$ /mnt/ntfs_check_$$; do
+        if mountpoint -q "$mount_dir" 2>/dev/null; then
+            umount "$mount_dir" 2>/dev/null || umount -l "$mount_dir" 2>/dev/null || true
+        fi
+        [ -d "$mount_dir" ] && rmdir "$mount_dir" 2>/dev/null || true
+    done
+    
+    # Save state for potential resume
+    save_state 2>/dev/null || true
+    
+    # Release lock file
+    release_lock
+    
+    # Cleanup screen
+    cleanup_screen
+}
+
 # Get the number of available content rows
 get_content_rows() {
     if [ "$SCREEN_INITIALIZED" != true ]; then
-        init_screen_layout
+        init_screen
     fi
     echo $((CONTENT_END_ROW - CONTENT_START_ROW + 1))
 }
@@ -814,7 +886,7 @@ log_message() {
     local level="${2:-info}"  # info, success, warning, error
     
     if [ "$SCREEN_INITIALIZED" != true ]; then
-        init_screen_layout
+        init_screen
     fi
     
     # Keep cursor hidden during UI updates
@@ -987,6 +1059,57 @@ draw_inline_progress() {
     fi
 }
 
+# Draw animated penguin that moves across the screen based on progress
+# Arguments: progress_percent (0-100), track_width
+draw_animated_penguin() {
+    local progress="${1:-0}"
+    local track_width="${2:-60}"
+    
+    # Ensure progress is a valid number
+    if ! [[ "$progress" =~ ^[0-9]+$ ]]; then
+        progress=0
+    fi
+    if ! [[ "$track_width" =~ ^[0-9]+$ ]]; then
+        track_width=60
+    fi
+    
+    # Penguin ASCII art (3 lines)
+    local penguin1="───(o>"
+    local penguin2=" ──//\\"
+    local penguin3="  ─V_/_"
+    local penguin_width=7
+    
+    # Calculate penguin position (0% = left edge, 100% = right edge)
+    local max_pos=$((track_width - penguin_width))
+    if [ "$max_pos" -lt 0 ]; then max_pos=0; fi
+    
+    local pos=0
+    if [ "$max_pos" -gt 0 ] && [ "$progress" -gt 0 ]; then
+        pos=$((progress * max_pos / 100))
+    fi
+    if [ "$pos" -lt 0 ]; then pos=0; fi
+    if [ "$pos" -gt "$max_pos" ]; then pos=$max_pos; fi
+    
+    # Build each line with the penguin at the calculated position
+    local line1="" line2="" line3=""
+    local i
+    
+    # Add leading spaces to position penguin
+    for ((i=0; i<pos; i++)); do
+        line1+=" "
+        line2+=" "
+        line3+=" "
+    done
+    
+    # Add penguin
+    line1+="${CYAN}${penguin1}${RESET}"
+    line2+="${CYAN}${penguin2}${RESET}"
+    line3+="${CYAN}${penguin3}${RESET}"
+    
+    # Output the three lines
+    printf "%s\n%s\n%s" "$line1" "$line2" "$line3"
+}
+
 # Render a progress display panel (uses top portion of content area)
 render_progress_panel() {
     local title="$1"
@@ -1012,32 +1135,48 @@ render_progress_panel() {
     # Only clear the progress area (top portion), preserve log area
     clear_progress_area
     
+    # Calculate track width based on screen width (leave margins)
+    local track_width=$((SCREEN_COLS - 4))
+    if [ "$track_width" -gt 70 ]; then track_width=70; fi
+    if [ "$track_width" -lt 30 ]; then track_width=30; fi
+    
+    # Draw animated penguin at the top (lines 0-2)
+    local penguin_output
+    penguin_output=$(draw_animated_penguin "$progress_percent" "$track_width")
+    local line_num=0
+    while IFS= read -r line; do
+        write_content_line $line_num " $line"
+        line_num=$((line_num + 1))
+    done <<< "$penguin_output"
+    
+    write_content_line 3 ""
+    
     # Title
-    write_content_line 0 "${BOLD}${CYAN}$title${RESET}"
-    write_content_line 1 ""
+    write_content_line 4 "${BOLD}${CYAN}$title${RESET}"
+    write_content_line 5 ""
     
     # Source/Target info
-    write_content_line 2 " Source:    ${BOLD}$source_label${RESET}"
-    write_content_line 3 " Target:    ${BOLD}$target_label${RESET}"
-    write_content_line 4 ""
+    write_content_line 6 " Source:    ${BOLD}$source_label${RESET}"
+    write_content_line 7 " Target:    ${BOLD}$target_label${RESET}"
+    write_content_line 8 ""
     
     # Progress bars
     local iter_bar
     iter_bar=$(draw_inline_progress "$iteration_current" "$iteration_total" 20)
-    write_content_line 5 " Iteration  $iter_bar  $iteration_current / $iteration_total"
+    write_content_line 9 " Iteration  $iter_bar  $iteration_current / $iteration_total"
     
     local prog_bar
     prog_bar=$(draw_inline_progress "$progress_percent" 100 20)
-    write_content_line 6 " Progress   $prog_bar"
+    write_content_line 10 " Progress   $prog_bar"
     
     if [ "$files_total" -gt 0 ]; then
         local files_bar
         files_bar=$(draw_inline_progress "$files_current" "$files_total" 20)
-        write_content_line 7 " Files      $files_bar  $files_current / $files_total"
+        write_content_line 11 " Files      $files_bar  $files_current / $files_total"
     fi
     
-    write_content_line 8 ""
-    write_content_line 9 " ${DIM}Current:${RESET} $current_op"
+    write_content_line 12 ""
+    write_content_line 13 " ${DIM}Current:${RESET} $current_op"
     
     # Re-render log lines in the log area (below progress panel)
     # This ensures both progress panel and logs are visible
@@ -1167,8 +1306,12 @@ draw_progress_bar() {
     local current=$1
     local total=$2
     local width=50
-    local percent=$(( current * 100 / total ))
-    local filled=$(( current * width / total ))
+    local percent=0
+    local filled=0
+    if [ "$total" -gt 0 ]; then
+        percent=$(( current * 100 / total ))
+        filled=$(( current * width / total ))
+    fi
     local empty=$(( width - filled ))
     
     local progress_bar="\r["
@@ -1187,27 +1330,35 @@ print_header() {
     local header_output=""
     header_output+="\n"
     
-    local text1="${BOLD}${CYAN}╔══════════════════════════════════════════════════╗${RESET}"
-    local text1_stripped
-    text1_stripped=$(strip_ansi "$text1")
-    local padding1=$(( (width - ${#text1_stripped}) / 2 ))
+    # ASCII art: speed lines + penguin (zooming to Linux!)
+    local art1="───(o>"
+    local art2=" ──//\\"
+    local art3="  ─V_/_"
+    local title_text="P E N G U I N I Z E"
+    
     local j
+    
+    # Center and print ASCII art line 1
+    local padding1=$(( (width - ${#art1}) / 2 ))
     for ((j=0; j<padding1; j++)); do header_output+=" "; done
-    header_output+="$text1\n"
+    header_output+="${CYAN}${art1}${RESET}\n"
     
-    local text2="${BOLD}${CYAN}║${RESET}  ${BOLD}NTFS to Linux Filesystem Converter${RESET}  ${BOLD}${CYAN}║${RESET}"
-    local text2_stripped
-    text2_stripped=$(strip_ansi "$text2")
-    local padding2=$(( (width - ${#text2_stripped}) / 2 ))
+    # Center and print ASCII art line 2
+    local padding2=$(( (width - ${#art2}) / 2 ))
     for ((j=0; j<padding2; j++)); do header_output+=" "; done
-    header_output+="$text2\n"
+    header_output+="${CYAN}${art2}${RESET}\n"
     
-    local text3="${BOLD}${CYAN}╚══════════════════════════════════════════════════╝${RESET}"
-    local text3_stripped
-    text3_stripped=$(strip_ansi "$text3")
-    local padding3=$(( (width - ${#text3_stripped}) / 2 ))
+    # Center and print ASCII art line 3
+    local padding3=$(( (width - ${#art3}) / 2 ))
     for ((j=0; j<padding3; j++)); do header_output+=" "; done
-    header_output+="$text3\n"
+    header_output+="${CYAN}${art3}${RESET}\n"
+    
+    header_output+="\n"
+    
+    # Center and print title
+    local padding_title=$(( (width - ${#title_text}) / 2 ))
+    for ((j=0; j<padding_title; j++)); do header_output+=" "; done
+    header_output+="${BOLD}${title_text}${RESET}\n"
     
     header_output+="\n"
     
@@ -1605,6 +1756,33 @@ check_dependencies() {
 # Disk and Partition Detection
 ###############################################################################
 
+# Extract disk device from partition path
+# Handles standard devices (sda1 -> sda) and nvme/mmcblk (nvme0n1p1 -> nvme0n1)
+get_disk_from_partition() {
+    local partition="$1"
+    local disk=""
+    
+    # Handle nvme devices: /dev/nvme0n1p1 -> /dev/nvme0n1
+    if [[ "$partition" =~ ^(/dev/nvme[0-9]+n[0-9]+)p[0-9]+$ ]]; then
+        disk="${BASH_REMATCH[1]}"
+    # Handle mmcblk devices: /dev/mmcblk0p1 -> /dev/mmcblk0
+    elif [[ "$partition" =~ ^(/dev/mmcblk[0-9]+)p[0-9]+$ ]]; then
+        disk="${BASH_REMATCH[1]}"
+    # Handle standard devices: /dev/sda1 -> /dev/sda
+    else
+        disk=$(echo "$partition" | sed 's/[0-9]*$//')
+    fi
+    
+    echo "$disk"
+}
+
+# Extract partition number from partition path
+# Handles standard devices and nvme/mmcblk
+get_partition_number() {
+    local partition="$1"
+    echo "$partition" | grep -o '[0-9]*$'
+}
+
 list_disks() {
     if [ "$DUMMY_MODE" = true ]; then
         echo "/dev/sda - 100G - Dummy Test Disk"
@@ -1713,7 +1891,7 @@ defrag_ntfs() {
     
     # SAFETY: Never defrag SSDs - derive disk from partition and check
     local disk
-    disk=$(echo "$partition" | sed 's/[0-9]*$//')
+    disk=$(get_disk_from_partition "$partition")
     local disk_type
     disk_type=$(detect_disk_type "$disk")
     
@@ -1799,7 +1977,7 @@ defrag_linux_fs() {
     
     # SAFETY: Never defrag SSDs - derive disk from partition and check
     local disk
-    disk=$(echo "$partition" | sed 's/[0-9]*$//')
+    disk=$(get_disk_from_partition "$partition")
     local disk_type
     disk_type=$(detect_disk_type "$disk")
     
@@ -2126,22 +2304,78 @@ select_filesystem() {
 
 save_state() {
     mkdir -p "$STATE_DIR"
+    # Quote all values to prevent issues with special characters
     cat > "$STATE_FILE" <<EOF
-DISK=$SELECTED_DISK
-TARGET_FILESYSTEM=$TARGET_FILESYSTEM
-NTFS_PARTITION=$NTFS_PARTITION
-TARGET_PARTITION=$TARGET_PARTITION
-USE_EXISTING=$USE_EXISTING
-CURRENT_ITERATION=$CURRENT_ITERATION
-LAST_OPERATION=$LAST_OPERATION
-NTFS_MOUNT=$NTFS_MOUNT
-TARGET_MOUNT=$TARGET_MOUNT
-FILES_MIGRATED=$FILES_MIGRATED
+DISK="$SELECTED_DISK"
+TARGET_FILESYSTEM="$TARGET_FILESYSTEM"
+NTFS_PARTITION="$NTFS_PARTITION"
+TARGET_PARTITION="$TARGET_PARTITION"
+USE_EXISTING="$USE_EXISTING"
+CURRENT_ITERATION="$CURRENT_ITERATION"
+LAST_OPERATION="$LAST_OPERATION"
+NTFS_MOUNT="$NTFS_MOUNT"
+TARGET_MOUNT="$TARGET_MOUNT"
+FILES_MIGRATED="$FILES_MIGRATED"
 EOF
+    # Set restrictive permissions on state file
+    chmod 600 "$STATE_FILE" 2>/dev/null || true
 }
 
 load_state() {
     if [ -f "$STATE_FILE" ]; then
+        # Security: validate state file before sourcing
+        # Check that file is owned by root and not world-writable
+        local file_perms
+        file_perms=$(stat -c "%a" "$STATE_FILE" 2>/dev/null || echo "777")
+        if [ "$file_perms" != "600" ] && [ "$DUMMY_MODE" != true ]; then
+            log_message "Warning: State file has unexpected permissions ($file_perms)" "warning"
+        fi
+        
+        # Validate content - ensure no dangerous patterns
+        if grep -qE '^\s*[^A-Z_]|[;&|`$()]|\.\.' "$STATE_FILE" 2>/dev/null; then
+            log_message "State file appears corrupted or tampered with" "error"
+            return 1
+        fi
+        
+        # Validate that values look like device paths or simple strings
+        while IFS='=' read -r key value; do
+            # Skip empty lines and comments
+            [[ -z "$key" || "$key" =~ ^# ]] && continue
+            # Remove quotes from value for validation
+            value="${value#\"}"
+            value="${value%\"}"
+            case "$key" in
+                DISK|NTFS_PARTITION|TARGET_PARTITION|NTFS_MOUNT|TARGET_MOUNT)
+                    # These should be paths - validate they look reasonable
+                    if [[ -n "$value" && ! "$value" =~ ^/[a-zA-Z0-9/_.-]*$ ]]; then
+                        log_message "Invalid path in state file: $key=$value" "error"
+                        return 1
+                    fi
+                    ;;
+                TARGET_FILESYSTEM)
+                    # Should be a valid filesystem type
+                    if [[ -n "$value" && ! "$value" =~ ^(ext4|btrfs|xfs|f2fs|reiserfs|jfs)$ ]]; then
+                        log_message "Invalid filesystem in state file: $value" "error"
+                        return 1
+                    fi
+                    ;;
+                USE_EXISTING)
+                    # Should be true or false
+                    if [[ -n "$value" && ! "$value" =~ ^(true|false)$ ]]; then
+                        log_message "Invalid boolean in state file: $key=$value" "error"
+                        return 1
+                    fi
+                    ;;
+                CURRENT_ITERATION|FILES_MIGRATED)
+                    # Should be a number
+                    if [[ -n "$value" && ! "$value" =~ ^[0-9]+$ ]]; then
+                        log_message "Invalid number in state file: $key=$value" "error"
+                        return 1
+                    fi
+                    ;;
+            esac
+        done < "$STATE_FILE"
+        
         source "$STATE_FILE"
         return 0
     fi
@@ -2244,10 +2478,10 @@ shrink_ntfs() {
     
     log_message "Validation passed. Proceeding with resize..." "success"
     
-    # Perform the actual resize (without -f flag for safety)
+    # Perform the actual resize (pipe 'y' for confirmation, without -f flag for safety)
     log_message "Resizing NTFS filesystem..." "info"
     local resize_output
-    resize_output=$(ntfsresize -s "${target_size}K" "$partition" 2>&1)
+    resize_output=$(echo "y" | ntfsresize -s "${target_size}K" "$partition" 2>&1)
     local resize_status=$?
     
     if [ $resize_status -ne 0 ]; then
@@ -2260,9 +2494,9 @@ shrink_ntfs() {
     
     # Resize partition table entry
     local part_num
-    part_num=$(echo "$partition" | grep -o '[0-9]*$')
+    part_num=$(get_partition_number "$partition")
     local disk
-    disk=$(echo "$partition" | sed 's/[0-9]*$//')
+    disk=$(get_disk_from_partition "$partition")
     
     log_message "Updating partition table..." "info"
     local parted_output
@@ -2291,7 +2525,11 @@ create_partition() {
     local start="$2"
     local end="$3"
     
-    log_message "Creating partition on $disk from ${start}KB to ${end}KB" "info"
+    # Align start to 1MiB boundary for optimal SSD/HDD performance
+    # 1MiB = 1024 KB; round up to next 1MiB boundary
+    local aligned_start=$(( (start + 1023) / 1024 * 1024 ))
+    
+    log_message "Creating partition on $disk from ${aligned_start}KB to ${end}KB (aligned from ${start}KB)" "info"
     update_status_bar "Creating partition..."
     
     if [ "$DUMMY_MODE" = true ]; then
@@ -2302,7 +2540,7 @@ create_partition() {
     fi
     
     if [ "$DRY_RUN" = true ]; then
-        log_message "[DRY RUN] Would run: parted $disk mkpart primary ${start}KB ${end}KB" "info"
+        log_message "[DRY RUN] Would run: parted $disk mkpart primary ${aligned_start}KB ${end}KB" "info"
         echo "/dev/sdXY"  # Dummy output
         return 0
     fi
@@ -2311,9 +2549,9 @@ create_partition() {
     local existing_parts
     existing_parts=$(lsblk -ln -o NAME "$disk" 2>/dev/null | grep -v "^$(basename "$disk")$" | sort)
     
-    # Create the partition
+    # Create the partition with aligned start
     local parted_output
-    parted_output=$(parted "$disk" -s mkpart primary "${start}KB" "${end}KB" 2>&1)
+    parted_output=$(parted "$disk" -s mkpart primary "${aligned_start}KB" "${end}KB" 2>&1)
     local parted_status=$?
     
     if [ $parted_status -ne 0 ]; then
@@ -2458,6 +2696,13 @@ expand_filesystem() {
             f2fs)
                 resize.f2fs "$partition" >/dev/null 2>&1 || return 1
                 ;;
+            reiserfs)
+                resize_reiserfs -f "$partition" >/dev/null 2>&1 || return 1
+                ;;
+            jfs)
+                # JFS does not support online resize - warn and skip
+                log_message "JFS does not support filesystem expansion - partition will have unused space" "warning"
+                ;;
         esac
     fi
     
@@ -2599,7 +2844,10 @@ verify_file_migration() {
         local dest_file="$dest_mount/$rel_path"
         
         # Update progress in status bar (every 50 files or every 2%)
-        local progress_percent=$((total_checked * 100 / source_files))
+        local progress_percent=0
+        if [ "$source_files" -gt 0 ]; then
+            progress_percent=$((total_checked * 100 / source_files))
+        fi
         if [ $((total_checked % 50)) -eq 0 ] || [ $progress_percent -ne $last_progress_update ]; then
             update_status_bar "Verifying: $verified_count OK, $failed_count failed" "${progress_percent}%"
             last_progress_update=$progress_percent
@@ -2817,7 +3065,7 @@ migrate_files() {
     fi
     
     if [ "$DRY_RUN" = true ]; then
-        log_message "[DRY RUN] Would run: rsync -avx --progress $source/ $dest/" "info"
+        log_message "[DRY RUN] Would run: rsync -avxH --progress $source/ $dest/" "info"
         return 0
     fi
     
@@ -2863,8 +3111,9 @@ migrate_files() {
     update_status_bar "Migrating $total_files files..."
     
     # Run rsync in background and capture status
+    # -H preserves hard links, -a preserves permissions/ownership/timestamps, -v verbose, -x stay on one filesystem
     (
-        rsync -avx --info=progress2 --human-readable \
+        rsync -avxH --info=progress2 --human-readable \
             "$NTFS_MOUNT/" "$TARGET_MOUNT/" > "$rsync_log" 2>&1
         echo $? > "$rsync_status_file"
     ) &
@@ -3025,9 +3274,9 @@ get_partition_size_kb() {
         return 0
     fi
     local disk
-    disk=$(echo "$partition" | sed 's/[0-9]*$//')
+    disk=$(get_disk_from_partition "$partition")
     local part_num
-    part_num=$(echo "$partition" | grep -o '[0-9]*$')
+    part_num=$(get_partition_number "$partition")
     local start_kb end_kb
     start_kb=$(parted "$disk" unit KB print | grep "^ $part_num" | awk '{print $2}' | sed 's/kB//')
     end_kb=$(parted "$disk" unit KB print | grep "^ $part_num" | awk '{print $3}' | sed 's/kB//')
@@ -3041,9 +3290,9 @@ get_partition_start_kb() {
         return 0
     fi
     local disk
-    disk=$(echo "$partition" | sed 's/[0-9]*$//')
+    disk=$(get_disk_from_partition "$partition")
     local part_num
-    part_num=$(echo "$partition" | grep -o '[0-9]*$')
+    part_num=$(get_partition_number "$partition")
     parted "$disk" unit KB print | grep "^ $part_num" | awk '{print $2}' | sed 's/kB//'
 }
 
@@ -3058,9 +3307,9 @@ get_partition_end_kb() {
         return 0
     fi
     local disk
-    disk=$(echo "$partition" | sed 's/[0-9]*$//')
+    disk=$(get_disk_from_partition "$partition")
     local part_num
-    part_num=$(echo "$partition" | grep -o '[0-9]*$')
+    part_num=$(get_partition_number "$partition")
     parted "$disk" unit KB print | grep "^ $part_num" | awk '{print $3}' | sed 's/kB//'
 }
 
@@ -3151,6 +3400,19 @@ preflight_checks() {
             mount_point=$(findmnt -n -o TARGET "$ntfs_part" 2>/dev/null)
             warnings+=("NTFS partition $ntfs_part is mounted at $mount_point (will be unmounted)")
         fi
+        
+        # Check if this is an EFI System Partition (would brick system if converted)
+        local part_type
+        part_type=$(blkid -o value -s PART_ENTRY_TYPE "$ntfs_part" 2>/dev/null || true)
+        # c12a7328-f81f-11d2-ba4b-00a0c93ec93b is the EFI System Partition type GUID
+        if [ "$part_type" = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b" ]; then
+            issues+=("Partition $ntfs_part appears to be an EFI System Partition - CANNOT convert")
+        fi
+        # Also check for Windows recovery partition type
+        # de94bba4-06d1-4d40-a16a-bfd50179d6ac is Windows Recovery Environment
+        if [ "$part_type" = "de94bba4-06d1-4d40-a16a-bfd50179d6ac" ]; then
+            warnings+=("Partition $ntfs_part appears to be a Windows Recovery partition")
+        fi
     fi
     
     # Check 3: Verify required tools are available
@@ -3220,6 +3482,31 @@ preflight_checks() {
         if [ -n "$swap_parts" ]; then
             issues+=("Swap is active on $swap_parts. Please disable swap first.")
         fi
+    fi
+    
+    # Check 8: Verify disk doesn't contain critical system partitions
+    if [ -b "$disk" ]; then
+        local part_name mount_point
+        while read -r part_name; do
+            [ -z "$part_name" ] && continue
+            mount_point=$(findmnt -n -o TARGET "/dev/$part_name" 2>/dev/null || true)
+            if [ -n "$mount_point" ]; then
+                case "$mount_point" in
+                    /)
+                        issues+=("Partition /dev/$part_name is the root filesystem - CANNOT convert this disk")
+                        ;;
+                    /boot|/boot/efi|/efi)
+                        issues+=("Partition /dev/$part_name is mounted at $mount_point (boot/EFI) - CANNOT convert this disk")
+                        ;;
+                    /home)
+                        warnings+=("Partition /dev/$part_name is mounted at /home - ensure this is not your active home partition")
+                        ;;
+                    /var|/usr|/tmp)
+                        issues+=("Partition /dev/$part_name is mounted at $mount_point (critical system path) - CANNOT convert this disk")
+                        ;;
+                esac
+            fi
+        done < <(lsblk -ln -o NAME "$disk" 2>/dev/null | grep -v "^$(basename "$disk")$")
     fi
     
     # Report results
@@ -3546,9 +3833,9 @@ main_conversion_loop() {
     save_state
     
     local part_num
-    part_num=$(echo "$NTFS_PARTITION" | grep -o '[0-9]*$')
+    part_num=$(get_partition_number "$NTFS_PARTITION")
     local disk
-    disk=$(echo "$NTFS_PARTITION" | sed 's/[0-9]*$//')
+    disk=$(get_disk_from_partition "$NTFS_PARTITION")
     
     log_message "Deleting NTFS partition $NTFS_PARTITION" "info"
     if [ "$DUMMY_MODE" = true ]; then
@@ -3668,15 +3955,18 @@ main() {
     # Check root
     check_root
     
+    # Acquire exclusive lock to prevent concurrent runs
+    acquire_lock
+    
     # Initialize the TUI screen
     init_screen
     
     # Print welcome message
     if [ "$DUMMY_MODE" = true ]; then
-        log_message "NTFS to Linux Filesystem Converter v${SCRIPT_VERSION}" "info"
+        log_message "Penguinize v${SCRIPT_VERSION}" "info"
         log_message "Running in DUMMY MODE - no actual operations" "warning"
     else
-        log_message "NTFS to Linux Filesystem Converter v${SCRIPT_VERSION}" "info"
+        log_message "Penguinize v${SCRIPT_VERSION}" "info"
         log_message "Ready to convert NTFS partitions" "info"
     fi
     update_status_bar "Welcome" ""
@@ -3716,7 +4006,7 @@ main() {
 }
 
 # Trap signals for graceful exit
-trap 'cleanup_screen; save_state; exit 1' INT TERM
+trap 'cleanup_on_signal; exit 1' INT TERM
 
 # Run main function
 main "$@"
