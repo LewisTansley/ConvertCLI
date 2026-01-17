@@ -7,7 +7,7 @@ A powerful, interactive TUI-based bash tool for safely converting NTFS partition
 ![Shell](https://img.shields.io/badge/shell-bash-green.svg)
 ![Shell](https://img.shields.io/badge/shell-fish-green.svg)
 ![Shell](https://img.shields.io/badge/shell-zsh-green.svg)
-![Version](https://img.shields.io/badge/version-1.0.0-orange.svg)
+![Version](https://img.shields.io/badge/version-1.1.0-orange.svg)
 
 ## Overview
 
@@ -61,7 +61,8 @@ ConvertCLI provides a safe, iterative approach to converting NTFS partitions to 
 
 ### Smart Automation
 
-- **Auto Dependency Installation** - Automatically installs required packages via pacman
+- **Auto Dependency Installation** - Automatically installs required packages using your distro's package manager
+- **Multi-Distribution Support** - Works on Arch, Debian/Ubuntu, Fedora, openSUSE, Alpine, and more
 - **HDD/SSD Detection** - Detects storage type for optimal operation settings
 - **Existing Partition Detection** - Can utilize existing target filesystem partitions
 - **Defragmentation Support** - Optional pre/post conversion defrag for HDDs
@@ -72,10 +73,20 @@ ConvertCLI provides a safe, iterative approach to converting NTFS partitions to 
 
 ### System Requirements
 
-- **Operating System**: Arch Linux (or compatible distribution with pacman)
+- **Operating System**: Any Linux distribution (see supported list below)
 - **Privileges**: Root/sudo access required
 - **Terminal**: ANSI color support recommended (80x24 minimum)
-- **Shell**: Bash 4.0+
+- **Shell**: Bash 4.0+ (can be invoked from any shell)
+
+### Supported Distributions
+
+| Distribution Family | Examples |
+|---------------------|----------|
+| **Arch-based** | Arch Linux, Manjaro, EndeavourOS, Garuda, CachyOS |
+| **Debian-based** | Debian, Ubuntu, Linux Mint, Pop!_OS, Zorin OS, elementary OS |
+| **Fedora-based** | Fedora, RHEL, CentOS Stream, Rocky Linux, Alma Linux |
+| **SUSE-based** | openSUSE Tumbleweed, openSUSE Leap, SLES |
+| **Other** | Alpine Linux, Void Linux, Gentoo |
 
 ### Dependencies
 
@@ -302,15 +313,36 @@ sudo ./convert_ntfs_to_linux_fs.sh
 
 #### Package installation fails
 
+Update your package database and install manually based on your distribution:
+
+**Arch Linux:**
 ```bash
-# Update package database
 sudo pacman -Sy
-
-# Check network connectivity
-ping -c 3 archlinux.org
-
-# Manual installation if needed
 sudo pacman -S ntfs-3g parted rsync util-linux
+```
+
+**Debian/Ubuntu:**
+```bash
+sudo apt-get update
+sudo apt-get install ntfs-3g parted rsync util-linux
+```
+
+**Fedora:**
+```bash
+sudo dnf check-update
+sudo dnf install ntfs-3g parted rsync util-linux
+```
+
+**openSUSE:**
+```bash
+sudo zypper refresh
+sudo zypper install ntfs-3g parted rsync util-linux
+```
+
+**Alpine:**
+```bash
+sudo apk update
+sudo apk add ntfs-3g-progs parted rsync util-linux
 ```
 
 #### Conversion interrupted
@@ -366,9 +398,9 @@ If conversion fails mid-process:
 |------------|---------|
 | **Source filesystem** | Only NTFS supported as source |
 | **Single partition** | Converts one partition at a time |
-| **Package manager** | Designed for Arch Linux (pacman) |
 | **Partition table** | Works with MBR and GPT |
 | **Mounted partitions** | Source partition must be unmountable |
+| **Shell requirement** | Requires bash 4.0+ (installed by default on most distributions) |
 
 ---
 
@@ -435,6 +467,13 @@ the Free Software Foundation, either version 3 of the License, or
 ---
 
 ## Changelog
+
+### v1.1.0
+
+- **Multi-distribution support** - Now works on Arch, Debian/Ubuntu, Fedora, openSUSE, Alpine, and more
+- **Package manager abstraction** - Automatic detection and use of pacman, apt, dnf, zypper, apk, etc.
+- **Improved shell compatibility** - Can be invoked from any shell (bash, zsh, fish, etc.)
+- **Better error messages** - Distribution-specific installation instructions on failure
 
 ### v1.0.0
 

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 ###############################################################################
 # NTFS to Linux Filesystem Converter
@@ -8,11 +8,38 @@
 # shrinking and file migration.
 #
 # Author: L. Tansley
-# Version: 1.0.0
+# Version: 1.1.0
 # License: GPL v3
+#
+# Shell Compatibility:
+#   - This script requires bash 4.0+ to run (uses associative arrays, mapfile)
+#   - Can be invoked from any shell (fish, zsh, sh, etc.)
+#   - Will automatically re-exec with bash if needed
+#
+# Distribution Support:
+#   - Arch Linux and derivatives (Manjaro, EndeavourOS, etc.)
+#   - Debian/Ubuntu and derivatives (Mint, Pop!_OS, etc.)
+#   - Fedora/RHEL and derivatives (CentOS, Rocky, Alma, etc.)
+#   - openSUSE/SUSE
+#   - Alpine Linux
+#   - Void Linux
+#   - Gentoo
 ###############################################################################
 
 set -euo pipefail
+
+# Find bash executable - prefer /bin/bash but fall back to PATH lookup
+find_bash() {
+    if [ -x /bin/bash ]; then
+        echo "/bin/bash"
+    elif [ -x /usr/bin/bash ]; then
+        echo "/usr/bin/bash"
+    elif command -v bash >/dev/null 2>&1; then
+        command -v bash
+    else
+        echo ""
+    fi
+}
 
 # Ensure stdout is line-buffered for immediate display updates
 # This is critical for TUI to update properly during auto-advance
@@ -24,9 +51,14 @@ if [ -t 1 ] && command -v stdbuf >/dev/null 2>&1 && [ -z "${STDBUF_SET:-}" ]; th
         # Not an absolute path, resolve it
         SCRIPT_PATH="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
     fi
-    # Always use bash (not sh) with stdbuf for proper buffering
-    # This ensures the script runs with line-buffered output
-    exec stdbuf -oL -eL bash "$SCRIPT_PATH" "$@"
+    # Find bash and re-exec with stdbuf for proper buffering
+    BASH_PATH=$(find_bash)
+    if [ -n "$BASH_PATH" ]; then
+        exec stdbuf -oL -eL "$BASH_PATH" "$SCRIPT_PATH" "$@"
+    else
+        # No bash found, try to continue anyway
+        exec stdbuf -oL -eL "$SCRIPT_PATH" "$@"
+    fi
     exit $?  # Should never reach here
 fi
 
@@ -40,20 +72,40 @@ elif [ -n "${FISH_VERSION:-}" ]; then
     DETECTED_SHELL="fish"
 else
     # Try to detect from $0 or parent process
-    DETECTED_SHELL=$(basename "${SHELL:-bash}" 2>/dev/null || echo "bash")
+    DETECTED_SHELL=$(basename "${SHELL:-sh}" 2>/dev/null || echo "sh")
 fi
 
 # Check if running in bash (required for this script)
 if [ "$DETECTED_SHELL" != "bash" ] && [ -z "${BASH_VERSION:-}" ]; then
-    echo "Error: This script requires bash to run properly." >&2
+    echo "Error: This script requires bash 4.0+ to run properly." >&2
     echo "Detected shell: $DETECTED_SHELL" >&2
-    echo "Please run with: bash $0" >&2
+    echo "" >&2
+    echo "Please run with bash:" >&2
+    echo "  bash $0" >&2
+    echo "" >&2
+    echo "If bash is not installed, install it first:" >&2
+    echo "  Arch:     sudo pacman -S bash" >&2
+    echo "  Debian:   sudo apt-get install bash" >&2
+    echo "  Fedora:   sudo dnf install bash" >&2
+    echo "  Alpine:   sudo apk add bash" >&2
     exit 1
+fi
+
+# Check bash version (need 4.0+ for associative arrays)
+if [ -n "${BASH_VERSION:-}" ]; then
+    BASH_MAJOR="${BASH_VERSION%%.*}"
+    if [ "$BASH_MAJOR" -lt 4 ]; then
+        echo "Error: This script requires bash 4.0 or later." >&2
+        echo "Current version: $BASH_VERSION" >&2
+        echo "" >&2
+        echo "Please upgrade bash to version 4.0 or later." >&2
+        exit 1
+    fi
 fi
 
 # Script configuration
 SCRIPT_NAME="convert_ntfs_to_linux_fs.sh"
-SCRIPT_VERSION="1.0.0"
+SCRIPT_VERSION="1.1.0"
 STATE_DIR="${HOME}/.ntfs_to_linux_fs"
 STATE_FILE=""
 
@@ -182,6 +234,284 @@ FS_DESCRIPTIONS[xfs]="High-performance filesystem, excellent for large files"
 FS_DESCRIPTIONS[f2fs]="Flash-optimized filesystem, best for SSDs"
 FS_DESCRIPTIONS[reiserfs]="Legacy filesystem (limited modern support)"
 FS_DESCRIPTIONS[jfs]="Journaling filesystem (limited resize capabilities)"
+
+###############################################################################
+# Distribution and Package Manager Detection
+###############################################################################
+
+# Detected distribution family (cached)
+DETECTED_DISTRO=""
+DETECTED_PKG_MANAGER=""
+
+# Detect the Linux distribution family
+detect_distro() {
+    if [ -n "$DETECTED_DISTRO" ]; then
+        echo "$DETECTED_DISTRO"
+        return
+    fi
+    
+    if [ -f /etc/os-release ]; then
+        # shellcheck disable=SC1091
+        . /etc/os-release
+        case "$ID" in
+            arch|manjaro|endeavouros|artix|garuda|cachyos)
+                DETECTED_DISTRO="arch"
+                ;;
+            debian|ubuntu|mint|pop|linuxmint|elementary|zorin|kali|raspbian|neon)
+                DETECTED_DISTRO="debian"
+                ;;
+            fedora|rhel|centos|rocky|alma|nobara)
+                DETECTED_DISTRO="fedora"
+                ;;
+            opensuse*|suse*|sles)
+                DETECTED_DISTRO="suse"
+                ;;
+            alpine)
+                DETECTED_DISTRO="alpine"
+                ;;
+            void)
+                DETECTED_DISTRO="void"
+                ;;
+            gentoo)
+                DETECTED_DISTRO="gentoo"
+                ;;
+            nixos)
+                DETECTED_DISTRO="nixos"
+                ;;
+            *)
+                # Try to detect from ID_LIKE as fallback
+                case "${ID_LIKE:-}" in
+                    *arch*) DETECTED_DISTRO="arch" ;;
+                    *debian*|*ubuntu*) DETECTED_DISTRO="debian" ;;
+                    *fedora*|*rhel*) DETECTED_DISTRO="fedora" ;;
+                    *suse*) DETECTED_DISTRO="suse" ;;
+                    *) DETECTED_DISTRO="unknown" ;;
+                esac
+                ;;
+        esac
+    else
+        DETECTED_DISTRO="unknown"
+    fi
+    
+    echo "$DETECTED_DISTRO"
+}
+
+# Detect the available package manager
+detect_package_manager() {
+    if [ -n "$DETECTED_PKG_MANAGER" ]; then
+        echo "$DETECTED_PKG_MANAGER"
+        return
+    fi
+    
+    # Check for package managers in order of preference
+    if command -v pacman >/dev/null 2>&1; then
+        DETECTED_PKG_MANAGER="pacman"
+    elif command -v apt-get >/dev/null 2>&1; then
+        DETECTED_PKG_MANAGER="apt"
+    elif command -v dnf >/dev/null 2>&1; then
+        DETECTED_PKG_MANAGER="dnf"
+    elif command -v yum >/dev/null 2>&1; then
+        DETECTED_PKG_MANAGER="yum"
+    elif command -v zypper >/dev/null 2>&1; then
+        DETECTED_PKG_MANAGER="zypper"
+    elif command -v apk >/dev/null 2>&1; then
+        DETECTED_PKG_MANAGER="apk"
+    elif command -v xbps-install >/dev/null 2>&1; then
+        DETECTED_PKG_MANAGER="xbps"
+    elif command -v emerge >/dev/null 2>&1; then
+        DETECTED_PKG_MANAGER="portage"
+    elif command -v nix-env >/dev/null 2>&1; then
+        DETECTED_PKG_MANAGER="nix"
+    else
+        DETECTED_PKG_MANAGER="unknown"
+    fi
+    
+    echo "$DETECTED_PKG_MANAGER"
+}
+
+# Map package names for different distributions
+# Usage: map_package_name "generic_name"
+map_package_name() {
+    local pkg="$1"
+    local distro
+    distro=$(detect_distro)
+    
+    case "$pkg" in
+        # btrfs tools - different name on some distros
+        btrfs-progs)
+            case "$distro" in
+                suse) echo "btrfsprogs" ;;
+                *) echo "btrfs-progs" ;;
+            esac
+            ;;
+        # ntfs-3g - sometimes packaged differently
+        ntfs-3g)
+            case "$distro" in
+                alpine) echo "ntfs-3g-progs" ;;
+                *) echo "ntfs-3g" ;;
+            esac
+            ;;
+        # reiserfs tools
+        reiserfsprogs)
+            case "$distro" in
+                debian) echo "reiserfsprogs" ;;
+                fedora) echo "reiserfs-utils" ;;
+                *) echo "reiserfsprogs" ;;
+            esac
+            ;;
+        # jfs tools
+        jfsutils)
+            case "$distro" in
+                *) echo "jfsutils" ;;
+            esac
+            ;;
+        # Default: return as-is
+        *)
+            echo "$pkg"
+            ;;
+    esac
+}
+
+# Check if a package is installed
+# Usage: check_package_installed "package_name"
+check_package_installed() {
+    local pkg="$1"
+    local pkg_manager
+    pkg_manager=$(detect_package_manager)
+    
+    case "$pkg_manager" in
+        pacman)
+            pacman -Q "$pkg" >/dev/null 2>&1
+            ;;
+        apt)
+            dpkg -l "$pkg" 2>/dev/null | grep -q "^ii"
+            ;;
+        dnf|yum)
+            rpm -q "$pkg" >/dev/null 2>&1
+            ;;
+        zypper)
+            rpm -q "$pkg" >/dev/null 2>&1
+            ;;
+        apk)
+            apk info -e "$pkg" >/dev/null 2>&1
+            ;;
+        xbps)
+            xbps-query "$pkg" >/dev/null 2>&1
+            ;;
+        portage)
+            # For Gentoo, check if package is in world or installed
+            qlist -I "$pkg" >/dev/null 2>&1 || equery -q list "$pkg" >/dev/null 2>&1
+            ;;
+        nix)
+            # NixOS handles deps differently - check if command exists
+            return 0
+            ;;
+        *)
+            # Fallback: check if the main command exists
+            return 1
+            ;;
+    esac
+}
+
+# Install packages using the detected package manager
+# Usage: install_packages "pkg1" "pkg2" ...
+install_packages() {
+    local packages=("$@")
+    local pkg_manager
+    pkg_manager=$(detect_package_manager)
+    
+    if [ ${#packages[@]} -eq 0 ]; then
+        return 0
+    fi
+    
+    # Map package names for the current distribution
+    local mapped_packages=()
+    for pkg in "${packages[@]}"; do
+        mapped_packages+=("$(map_package_name "$pkg")")
+    done
+    
+    case "$pkg_manager" in
+        pacman)
+            pacman -S --noconfirm "${mapped_packages[@]}"
+            ;;
+        apt)
+            DEBIAN_FRONTEND=noninteractive apt-get install -y "${mapped_packages[@]}"
+            ;;
+        dnf)
+            dnf install -y "${mapped_packages[@]}"
+            ;;
+        yum)
+            yum install -y "${mapped_packages[@]}"
+            ;;
+        zypper)
+            zypper --non-interactive install "${mapped_packages[@]}"
+            ;;
+        apk)
+            apk add --no-cache "${mapped_packages[@]}"
+            ;;
+        xbps)
+            xbps-install -y "${mapped_packages[@]}"
+            ;;
+        portage)
+            emerge --ask=n "${mapped_packages[@]}"
+            ;;
+        nix)
+            echo "NixOS detected. Please add packages to your configuration.nix:" >&2
+            echo "  ${mapped_packages[*]}" >&2
+            return 1
+            ;;
+        *)
+            echo "Unknown package manager. Please install manually:" >&2
+            echo "  ${mapped_packages[*]}" >&2
+            return 1
+            ;;
+    esac
+}
+
+# Get the package manager's update command (for troubleshooting info)
+get_pkg_manager_update_cmd() {
+    local pkg_manager
+    pkg_manager=$(detect_package_manager)
+    
+    case "$pkg_manager" in
+        pacman) echo "sudo pacman -Sy" ;;
+        apt) echo "sudo apt-get update" ;;
+        dnf) echo "sudo dnf check-update" ;;
+        yum) echo "sudo yum check-update" ;;
+        zypper) echo "sudo zypper refresh" ;;
+        apk) echo "sudo apk update" ;;
+        xbps) echo "sudo xbps-install -S" ;;
+        portage) echo "sudo emerge --sync" ;;
+        nix) echo "sudo nix-channel --update" ;;
+        *) echo "# Update your package manager" ;;
+    esac
+}
+
+# Get the manual install command for troubleshooting
+get_manual_install_cmd() {
+    local packages=("$@")
+    local pkg_manager
+    pkg_manager=$(detect_package_manager)
+    
+    # Map package names
+    local mapped_packages=()
+    for pkg in "${packages[@]}"; do
+        mapped_packages+=("$(map_package_name "$pkg")")
+    done
+    
+    case "$pkg_manager" in
+        pacman) echo "sudo pacman -S ${mapped_packages[*]}" ;;
+        apt) echo "sudo apt-get install ${mapped_packages[*]}" ;;
+        dnf) echo "sudo dnf install ${mapped_packages[*]}" ;;
+        yum) echo "sudo yum install ${mapped_packages[*]}" ;;
+        zypper) echo "sudo zypper install ${mapped_packages[*]}" ;;
+        apk) echo "sudo apk add ${mapped_packages[*]}" ;;
+        xbps) echo "sudo xbps-install ${mapped_packages[*]}" ;;
+        portage) echo "sudo emerge ${mapped_packages[*]}" ;;
+        nix) echo "# Add to configuration.nix: ${mapped_packages[*]}" ;;
+        *) echo "# Install: ${mapped_packages[*]}" ;;
+    esac
+}
 
 ###############################################################################
 # Utility Functions
@@ -1213,13 +1543,33 @@ check_dependencies() {
         show_info_auto "Dummy mode: Skipping dependency checks" 1
         return 0
     fi
+    
     local missing_packages=()
+    local pkg_manager
+    local distro
+    
+    # Detect distribution and package manager
+    distro=$(detect_distro)
+    pkg_manager=$(detect_package_manager)
+    
+    if [ "$pkg_manager" = "unknown" ]; then
+        show_error "Unable to detect package manager. Please install dependencies manually."
+        echo "Required packages: ntfs-3g parted rsync util-linux" >&2
+        if [ -n "$fs_type" ] && [ -n "${FS_PACKAGES[$fs_type]:-}" ]; then
+            echo "Filesystem tools: ${FS_PACKAGES[$fs_type]}" >&2
+        fi
+        exit 1
+    fi
+    
+    show_info_auto "Detected: $distro ($pkg_manager)" 1
     
     # Base dependencies
     local base_packages=("ntfs-3g" "parted" "rsync" "util-linux")
     
     for pkg in "${base_packages[@]}"; do
-        if ! pacman -Q "$pkg" >/dev/null 2>&1; then
+        local mapped_pkg
+        mapped_pkg=$(map_package_name "$pkg")
+        if ! check_package_installed "$mapped_pkg"; then
             missing_packages+=("$pkg")
         fi
     done
@@ -1227,15 +1577,24 @@ check_dependencies() {
     # Filesystem-specific dependencies
     if [ -n "$fs_type" ] && [ -n "${FS_PACKAGES[$fs_type]:-}" ]; then
         local fs_pkg="${FS_PACKAGES[$fs_type]}"
-        if ! pacman -Q "$fs_pkg" >/dev/null 2>&1; then
+        local mapped_fs_pkg
+        mapped_fs_pkg=$(map_package_name "$fs_pkg")
+        if ! check_package_installed "$mapped_fs_pkg"; then
             missing_packages+=("$fs_pkg")
         fi
     fi
     
     if [ ${#missing_packages[@]} -gt 0 ]; then
         show_info_auto "Installing missing packages: ${missing_packages[*]}" 1
-        if ! pacman -S --noconfirm "${missing_packages[@]}" >/dev/null 2>&1; then
-            show_error "Failed to install packages. Please install manually: ${missing_packages[*]}"
+        if ! install_packages "${missing_packages[@]}" >/dev/null 2>&1; then
+            local manual_cmd
+            manual_cmd=$(get_manual_install_cmd "${missing_packages[@]}")
+            show_error "Failed to install packages. Please install manually:"
+            echo "" >&2
+            echo "  $manual_cmd" >&2
+            echo "" >&2
+            echo "You may need to update your package database first:" >&2
+            echo "  $(get_pkg_manager_update_cmd)" >&2
             exit 1
         fi
         show_message "Success" "Packages installed successfully" "$GREEN" "true" 1
