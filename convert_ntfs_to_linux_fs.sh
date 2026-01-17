@@ -145,6 +145,10 @@ CURRENT_PROGRESS=""
 LOG_LINES=()
 MAX_LOG_LINES=10
 
+# Split content area mode - when true, progress panel uses top, logs use bottom
+PROGRESS_PANEL_ACTIVE=false
+PROGRESS_PANEL_HEIGHT=11  # Rows 0-10 for progress panel (title + 10 lines)
+
 # Filesystem definitions
 declare -A FS_PACKAGES
 FS_PACKAGES[ext4]="e2fsprogs"
@@ -375,6 +379,54 @@ clear_content_area() {
     
     # Position cursor at start of content area
     tput cup $CONTENT_START_ROW 1 >/dev/tty 2>/dev/null || true
+    
+    # Reset progress panel state when clearing entire content area
+    PROGRESS_PANEL_ACTIVE=false
+}
+
+# Clear only the progress panel area (top portion of content area)
+clear_progress_area() {
+    if [ "$SCREEN_INITIALIZED" != true ]; then
+        init_screen_layout
+    fi
+    
+    local row
+    local end_row=$((CONTENT_START_ROW + PROGRESS_PANEL_HEIGHT - 1))
+    if [ $end_row -gt $CONTENT_END_ROW ]; then
+        end_row=$CONTENT_END_ROW
+    fi
+    
+    for ((row=CONTENT_START_ROW; row<=end_row; row++)); do
+        tput cup $row 0 >/dev/tty 2>/dev/null || true
+        tput el >/dev/tty 2>/dev/null || true
+    done
+}
+
+# Clear only the log area (bottom portion of content area, below progress panel)
+clear_log_area() {
+    if [ "$SCREEN_INITIALIZED" != true ]; then
+        init_screen_layout
+    fi
+    
+    local start_row=$((CONTENT_START_ROW + PROGRESS_PANEL_HEIGHT))
+    local row
+    for ((row=start_row; row<=CONTENT_END_ROW; row++)); do
+        tput cup $row 0 >/dev/tty 2>/dev/null || true
+        tput el >/dev/tty 2>/dev/null || true
+    done
+}
+
+# Get the number of available log rows (when progress panel is active)
+get_log_rows() {
+    if [ "$SCREEN_INITIALIZED" != true ]; then
+        init_screen_layout
+    fi
+    local total_rows=$((CONTENT_END_ROW - CONTENT_START_ROW + 1))
+    if [ "$PROGRESS_PANEL_ACTIVE" = true ]; then
+        echo $((total_rows - PROGRESS_PANEL_HEIGHT))
+    else
+        echo $total_rows
+    fi
 }
 
 # Initialize the full screen layout
@@ -460,33 +512,49 @@ log_message() {
     render_log
 }
 
-# Render the log lines to the content area
+# Render the log lines to the content area (or log area if progress panel is active)
 render_log() {
-    local content_rows
-    content_rows=$(get_content_rows)
+    local available_rows
+    local row_offset=0
+    
+    if [ "$PROGRESS_PANEL_ACTIVE" = true ]; then
+        # Render in log area (below progress panel)
+        available_rows=$(get_log_rows)
+        row_offset=$PROGRESS_PANEL_HEIGHT
+        # Only clear log area
+        clear_log_area
+    else
+        # Render in full content area
+        available_rows=$(get_content_rows)
+        row_offset=0
+        # Clear full content area
+        clear_content_area
+    fi
+    
     local log_count=${#LOG_LINES[@]}
     local start_row=0
     
-    # Calculate starting position to show most recent logs at bottom
-    if [ $log_count -lt $content_rows ]; then
-        start_row=$((content_rows - log_count - 1))
+    # Calculate starting position to show most recent logs at bottom of available area
+    if [ $log_count -lt $available_rows ]; then
+        start_row=$((available_rows - log_count))
     fi
-    
-    # Clear content area first
-    clear_content_area
     
     # Write each log line
     local i
-    local row=$start_row
-    for ((i=0; i<log_count && row<content_rows; i++, row++)); do
-        write_content_line $row "${LOG_LINES[$i]}"
+    local display_row=$start_row
+    for ((i=0; i<log_count && display_row<available_rows; i++, display_row++)); do
+        write_content_line $((row_offset + display_row)) "${LOG_LINES[$i]}"
     done
 }
 
 # Clear the log
 clear_log() {
     LOG_LINES=()
-    clear_content_area
+    if [ "$PROGRESS_PANEL_ACTIVE" = true ]; then
+        clear_log_area
+    else
+        clear_content_area
+    fi
 }
 
 # Show a panel in the content area (for menus, info displays)
@@ -589,7 +657,7 @@ draw_inline_progress() {
     fi
 }
 
-# Render a progress display panel
+# Render a progress display panel (uses top portion of content area)
 render_progress_panel() {
     local title="$1"
     local source_label="$2"
@@ -608,7 +676,11 @@ render_progress_panel() {
     # Keep cursor hidden during UI updates
     tput civis >/dev/tty 2>/dev/null || true
     
-    clear_content_area
+    # Mark progress panel as active (so log renders below it)
+    PROGRESS_PANEL_ACTIVE=true
+    
+    # Only clear the progress area (top portion), preserve log area
+    clear_progress_area
     
     # Title
     write_content_line 0 "${BOLD}${CYAN}$title${RESET}"
@@ -637,8 +709,19 @@ render_progress_panel() {
     write_content_line 8 ""
     write_content_line 9 " ${DIM}Current:${RESET} $current_op"
     
+    # Re-render log lines in the log area (below progress panel)
+    # This ensures both progress panel and logs are visible
+    if [ ${#LOG_LINES[@]} -gt 0 ]; then
+        render_log
+    fi
+    
     # Update status bar
     update_status_bar "$current_op" "${progress_percent}%"
+}
+
+# Deactivate progress panel (for when transitioning to other screens)
+deactivate_progress_panel() {
+    PROGRESS_PANEL_ACTIVE=false
 }
 
 # Center text
